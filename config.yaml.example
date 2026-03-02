@@ -1,0 +1,19 @@
+# Proxmox Infrastructure Provider configuration
+# Copy this file to config.yaml and fill in your Proxmox details.
+#
+# Authentication: use either username/password OR tokenID/tokenSecret (not both).
+
+proxmox:
+  url: "https://proxmox.example.com:8006/api2/json"
+
+  # Option 1: Username/password authentication
+  username: "root"
+  password: "your-password-here"
+  realm: "pam"
+
+  # Option 2: API token authentication (comment out username/password above)
+  # tokenID: "user@pam!my-token"
+  # tokenSecret: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+  # Set to true if your Proxmox server uses a self-signed certificate
+  insecureSkipVerify: true

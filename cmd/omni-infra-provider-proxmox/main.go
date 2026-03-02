@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	dockerclient "github.com/docker/docker/client"
 	"github.com/luthermonson/go-proxmox"
 	"github.com/siderolabs/omni/client/pkg/client"
 	"github.com/siderolabs/omni/client/pkg/infra"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/siderolabs/omni-infra-provider-proxmox/internal/pkg/config"
 	"github.com/siderolabs/omni-infra-provider-proxmox/internal/pkg/provider"
+	localprovider "github.com/siderolabs/omni-infra-provider-proxmox/internal/pkg/provider/local"
 	"github.com/siderolabs/omni-infra-provider-proxmox/internal/pkg/provider/meta"
 )
 
@@ -52,7 +54,11 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("failed to create logger: %w", err)
 		}
 
-		if cfg.omniAPIEndpoint == "" {
+		if cfg.localMode {
+			return runLocalMode(cmd.Context(), logger)
+		}
+
+		if !cfg.dryRun && cfg.omniAPIEndpoint == "" {
 			return fmt.Errorf("omni-api-endpoint flag is not set")
 		}
 
@@ -102,6 +108,10 @@ var rootCmd = &cobra.Command{
 			opts...,
 		)
 
+		if cfg.dryRun {
+			return runDryRun(cmd.Context(), logger, proxmoxClient, proxmoxConfig)
+		}
+
 		provisioner := provider.NewProvisioner(proxmoxClient)
 
 		ip, err := infra.NewProvider(meta.ProviderID, provisioner, infra.ProviderConfig{
@@ -137,6 +147,8 @@ var cfg struct {
 	providerDescription string
 	configFile          string
 	insecureSkipVerify  bool
+	dryRun              bool
+	localMode           bool
 }
 
 func main() {
@@ -160,7 +172,88 @@ func init() {
 	rootCmd.Flags().StringVar(&cfg.providerName, "provider-name", "Proxmox", "provider name as it appears in Omni")
 	rootCmd.Flags().StringVar(&cfg.providerDescription, "provider-description", "Proxmox infrastructure provider", "Provider description as it appears in Omni")
 	rootCmd.Flags().BoolVar(&cfg.insecureSkipVerify, "insecure-skip-verify", false, "ignores untrusted certs on Omni side")
+	rootCmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "validate config and test Proxmox connectivity without connecting to Omni")
+	rootCmd.Flags().BoolVar(&cfg.localMode, "local", false, "use local Docker backend instead of Proxmox (for development)")
 
 	// Read everything into this config file
 	rootCmd.Flags().StringVar(&cfg.configFile, "config-file", "", "Proxmox provider config")
+}
+
+func runDryRun(ctx context.Context, logger *zap.Logger, proxmoxClient *proxmox.Client, proxmoxConfig config.Config) error {
+	logger.Info("dry-run mode: validating configuration and Proxmox connectivity")
+	logger.Info("proxmox config", zap.String("url", proxmoxConfig.Proxmox.URL))
+
+	version, err := proxmoxClient.Version(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to connect to Proxmox API: %w", err)
+	}
+
+	logger.Info("proxmox connection successful", zap.String("version", version.Version), zap.String("release", version.Release))
+
+	nodes, err := proxmoxClient.Nodes(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list Proxmox nodes: %w", err)
+	}
+
+	for _, node := range nodes {
+		logger.Info("found proxmox node",
+			zap.String("name", node.Node),
+			zap.String("status", node.Status),
+			zap.Uint64("maxMem", node.MaxMem),
+			zap.Uint64("mem", node.Mem),
+			zap.Int("maxCPU", node.MaxCPU),
+		)
+	}
+
+	logger.Info("dry-run complete: all checks passed", zap.Int("nodes", len(nodes)))
+
+	return nil
+}
+
+func runLocalMode(ctx context.Context, logger *zap.Logger) error {
+	logger.Info("starting in local Docker mode")
+
+	docker, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	if err != nil {
+		return fmt.Errorf("failed to create Docker client: %w", err)
+	}
+	defer docker.Close() //nolint:errcheck
+
+	// Verify Docker connectivity
+	info, err := docker.Info(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to connect to Docker: %w", err)
+	}
+
+	logger.Info("connected to Docker",
+		zap.String("serverVersion", info.ServerVersion),
+		zap.Int("containers", info.Containers),
+		zap.String("name", info.Name),
+	)
+
+	provisioner := localprovider.NewProvisioner(docker)
+
+	ip, err := infra.NewProvider(meta.ProviderID, provisioner, infra.ProviderConfig{
+		Name:        cfg.providerName,
+		Description: cfg.providerDescription + " (local Docker mode)",
+		Icon:        base64.RawStdEncoding.EncodeToString(icon),
+		Schema:      schema,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create infra provider: %w", err)
+	}
+
+	logger.Info("starting infra provider in local mode")
+
+	clientOptions := []client.Option{
+		client.WithInsecureSkipTLSVerify(cfg.insecureSkipVerify),
+	}
+
+	if cfg.serviceAccountKey != "" {
+		clientOptions = append(clientOptions, client.WithServiceAccount(cfg.serviceAccountKey))
+	}
+
+	return ip.Run(ctx, logger, infra.WithOmniEndpoint(cfg.omniAPIEndpoint), infra.WithClientOptions(
+		clientOptions...,
+	), infra.WithEncodeRequestIDsIntoTokens())
 }

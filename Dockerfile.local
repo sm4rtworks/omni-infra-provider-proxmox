@@ -1,0 +1,25 @@
+# Simplified Dockerfile for local development.
+# Use with: docker compose up --build
+
+FROM docker.io/golang:1.26-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build -o /omni-infra-provider-proxmox ./cmd/omni-infra-provider-proxmox
+
+# ---
+
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /omni-infra-provider-proxmox /omni-infra-provider-proxmox
+
+ENTRYPOINT ["/omni-infra-provider-proxmox"]

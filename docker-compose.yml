@@ -1,0 +1,41 @@
+services:
+  omni-infra-provider-proxmox:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    volumes:
+      - ./config.yaml:/config.yaml:ro
+    env_file:
+      - .env
+    command: >
+      --config-file /config.yaml
+      --omni-api-endpoint ${OMNI_API_ENDPOINT}
+      --omni-service-account-key ${OMNI_SERVICE_ACCOUNT_KEY}
+    restart: unless-stopped
+
+  dry-run:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    volumes:
+      - ./config.yaml:/config.yaml:ro
+    command: >
+      --config-file /config.yaml
+      --dry-run
+    profiles:
+      - test
+
+  local:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - .env
+    command: >
+      --local
+      --omni-api-endpoint ${OMNI_API_ENDPOINT}
+      --omni-service-account-key ${OMNI_SERVICE_ACCOUNT_KEY}
+    profiles:
+      - local
